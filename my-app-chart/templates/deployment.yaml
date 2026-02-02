@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-app-bluegreen.fullname" . }}  # 资源名：应用名-环境（如 my-business-app-green）
+  namespace: {{ .Release.Namespace }}  # 自动继承 Helm 部署的命名空间（jenkins-bluegreen-deploy）
+  labels:
+    {{- include "my-app-bluegreen.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicas }}  # 初始副本数，后续由 HPA 接管
+  selector:
+    matchLabels:
+      {{- include "my-app-bluegreen.labels" . | nindent 6 }}
+  strategy:
+    rollingUpdate:  # 蓝绿部署中，Green 环境的 Deployment 自身滚动更新（可选，不影响蓝绿流量切换）
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "my-app-bluegreen.labels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ .Values.app.name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"  # 镜像地址（由 Pipeline 覆盖）
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.app.port }}
+          name: http
+          protocol: TCP
+        # 健康检查
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # 资源限制（从 values.yaml 读取）
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}

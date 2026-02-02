@@ -1,0 +1,6 @@
+apiVersion: v2
+name: my-app-bluegreen
+description: 支持蓝绿部署+HPA联动的应用 Chart
+type: application
+version: 1.0.0  # Chart 版本（遵循语义化版本）
+appVersion: "1.0.0"  # 应用版本

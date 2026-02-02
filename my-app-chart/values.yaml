@@ -1,0 +1,36 @@
+# 镜像配置（对应 Pipeline 中的镜像地址/标签）
+image:
+  repository: your-docker-registry.cn/my-app  # 默认镜像仓库
+  tag: latest  # 默认镜像标签
+  pullPolicy: IfNotPresent  # 镜像拉取策略
+
+# 应用配置
+app:
+  name: my-business-app  # 应用名称，与 Pipeline 对应
+  env: blue  # 蓝绿环境标识（默认 blue，Pipeline 会覆盖为 green）
+  port: 8080  # 应用容器端口
+  replicas: 2  # 默认副本数（HPA 会接管，此处为初始值）
+
+# Service 配置
+service:
+  type: ClusterIP  # 服务类型（可选 NodePort/LoadBalancer，生产环境推荐 ClusterIP + Ingress）
+  port: 80  # Service 暴露端口
+  targetPort: 8080  # 对应容器端口
+
+# HPA 配置（对应 Pipeline 中的 HPA 参数）
+hpa:
+  enabled: true  # 是否启用 HPA
+  minReplicas: 2  # 最小副本数
+  maxReplicas: 10  # 最大副本数
+  cpuTargetUtilization: 70  # CPU 目标使用率阈值（%）
+  # 可选：内存目标使用率（如需启用，取消注释并配置）
+  # memoryTargetUtilization: 80
+
+# 容器资源限制（可选，避免 Pod 占用过多资源）
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
