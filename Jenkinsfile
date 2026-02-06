@@ -38,8 +38,10 @@ pipeline {
         HPA_MIN_REPLICAS = 2
         HPA_MAX_REPLICAS = 10
         HPA_CPU_TARGET_UTILIZATION = 70
-    }
 
+        L_G = "${LABEL_KEY}=green" // 原绿标签
+        L_B = "${LABEL_KEY}=blue"  // 原蓝标签
+    }
     parameters {
         booleanParam(
             name: "CLEAN_OLD_BLUE_ENV",
@@ -51,6 +53,9 @@ pipeline {
             defaultValue: false,
             description: "部署完成后是否销毁 Terraform 基础设施（仅测试环境）"
         )
+        string(name: 'K8S_NS', defaultValue: 'prod', desc: 'K8s命名空间')
+        string(name: 'SVC_NAME', defaultValue: 'app-svc', desc: '关联Service名')
+        string(name: 'LABEL_KEY', defaultValue: 'env', desc: '蓝绿标签键')
     }
 
     // 完整流程：Terraform → 拉代码 → Sonar 检测 → 构建镜像 → 蓝绿部署 → 可选销毁
@@ -129,8 +134,13 @@ pipeline {
                 sh "kubectl get ns ${K8S_NAMESPACE} || (echo 'Namespace 不存在' && exit 1)"
                 sh "test -d ${HELM_CHART_DIR} || (echo 'Chart 目录不存在' && exit 1)"
                 sh """
-                    kubectl get deployment metrics-server -n kube-system || (echo 'metrics-server 未部署' && exit 1)
-                    kubectl rollout status deployment metrics-server -n kube-system --timeout=1m
+                    def resStatus = sh(
+                       script: "kubectl get deployment metrics-server -n kube-system",
+                       returnStatus: true
+                    )
+                   if (resStatus != 0) {
+                   error "metrics-server  不存在，终止流程"
+                   }
                 """
             }
         }
@@ -154,8 +164,13 @@ pipeline {
                       --create-namespace=false
 
                 sh """
-                    kubectl get deployment ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}
-                    kubectl get hpa ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}
+                   def resStatus = sh(
+                       script: "kubectl get deployment ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE} && kubectl get hpa ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}",
+                      returnStatus: true
+                   )
+                  if (resStatus != 0) {
+                      error "depoyment 或 HPA 不存在"
+                  }
                 """
             }
         }
@@ -183,8 +198,14 @@ pipeline {
                       --set app.name=${APP_NAME} \
                       --show-only templates/service.yaml \
                       | kubectl apply -n ${K8S_NAMESPACE} -f -
-                    kubectl describe svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} | grep "Endpoints"
                 """
+                sh """
+                 def selectorCheck = sh(
+                     script: "kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.selector}' | grep -E '${GREEN_HELM_RELEASE}|${GREEN_ENV}'",
+                      returnStatus: true
+                  )
+                if (selectorCheck != 0) error "Service selector未指向绿环境，配置更新失败"
+                """     
             }
         }
 
@@ -198,9 +219,43 @@ pipeline {
                     helm uninstall ${BLUE_HELM_RELEASE} -n ${K8S_NAMESPACE} --ignore-not-found
                     kubectl delete pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} --ignore-not-found
                 """
+                sh """
+                def checkClean = sh(
+                script: """
+                    # 1. 检查Helm Release是否存在
+                    helm list -n ${K8S_NAMESPACE} | grep ${BLUE_HELM_RELEASE} && exit 1
+                    # 2. 检查Deployment/HPA是否残留（Helm卸载后应删除）
+                    kubectl get deploy,hpa -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} && exit 1
+                    # 3. 检查Pod是否彻底删除
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} && exit 1
+                """,
+                returnStatus: true
+                )
+               if (checkClean != 0) error " 蓝环境资源未清理干净，存在残留！"
+               echo "蓝环境（${BLUE_HELM_RELEASE}）清理完成，无资源残留"
+                """
+            }
+        }
+        // 互加标签：原绿加BLUE、原蓝加GREEN（双标签共存，流量不中断）   
+        stage('AddLabel') {
+            steps {
+                sh '''
+                    kubectl label pods -l ${L_G} -n ${K8S_NS} ${LABEL_KEY}=blue --overwrite=false
+                    kubectl label pods -l ${L_B} -n ${K8S_NS} ${LABEL_KEY}=green --overwrite=false
+                '''
+            }
+        }
+        // 移除旧标签：完成互换（原绿删GREEN、原蓝删BLUE）    --实现原来green标签变blue标签,原来blue标签变green标签,方便第二次部署
+        stage('DelOldLabel') {
+            steps {
+                sh '''
+                    kubectl label pods -l ${L_G} -n ${K8S_NS} ${LABEL_KEY}=green-
+                    kubectl label pods -l ${L_B} -n ${K8S_NS} ${LABEL_KEY}=blue-
+                '''
             }
         }
 
+        
         stage("Destroy Infra with Terraform (Optional)") {
             when {
                 expression { params.TERRAFORM_DESTROY_AFTER_DEPLOY == true }
@@ -247,3 +302,4 @@ pipeline {
     }
 
 }
+
