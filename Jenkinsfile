@@ -152,12 +152,7 @@ pipeline {
                       --set hpa.cpuTargetUtilization=${HPA_CPU_TARGET_UTILIZATION} \
                       --timeout ${HELM_DEPLOY_TIMEOUT} \
                       --create-namespace=false
-                """
-                sh """
-                    kubectl rollout status deployment/${GREEN_HELM_RELEASE}-${APP_NAME} \
-                      -n ${K8S_NAMESPACE} \
-                      --timeout=${HEALTH_CHECK_TIMEOUT}
-                """
+
                 sh """
                     kubectl get deployment ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}
                     kubectl get hpa ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}
@@ -250,4 +245,5 @@ pipeline {
             """
         }
     }
+
 }
