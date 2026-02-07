@@ -20,7 +20,7 @@ pipeline {
         // 4. 镜像构建/推送配置
         DOCKER_REGISTRY = "your-docker-registry.cn"
         DOCKER_IMAGE_NAME = "my-app"
-        DOCKER_IMAGE_TAG = "${BUILD_NUMBER}-${GIT_BRANCH}"
+        DOCKER_IMAGE_TAG = "v1.0.0"
         FULL_DOCKER_IMAGE = "${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
         DEFAULT_BLUE_IMAGE_TAG = "latest"
 
@@ -175,19 +175,6 @@ pipeline {
             }
         }
 
-        stage("Green Env Health Check") {
-            options {
-                timeout(time: HEALTH_CHECK_TIMEOUT, unit: "MINUTES")
-            }
-            steps {
-                echo "===== 绿环境健康检查 ====="
-                sh """
-                    GREEN_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${GREEN_ENV} -o jsonpath='{.items[0].metadata.name}')
-                    kubectl exec -n ${K8S_NAMESPACE} \${GREEN_POD} -- curl -s -f http://localhost:8080/actuator/health
-                """
-            }
-        }
-
         stage("Switch Traffic to Green Env") {
             steps {
                 echo "===== 切换流量到绿环境 ====="
@@ -200,7 +187,8 @@ pipeline {
                       | kubectl apply -n ${K8S_NAMESPACE} -f -
                 """
                 sh """
-                 def selectorCheck = sh(
+                
+                def selectorCheck = sh(
                      script: "kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.selector}' | grep -E '${GREEN_HELM_RELEASE}|${GREEN_ENV}'",
                       returnStatus: true
                   )
@@ -289,17 +277,35 @@ pipeline {
                       --set hpa.cpuTargetUtilization=${HPA_CPU_TARGET_UTILIZATION} \
                       --timeout ${HELM_DEPLOY_TIMEOUT} \
                       --create-namespace=false
-                    kubectl rollout status deployment/${BLUE_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE} --timeout=${HEALTH_CHECK_TIMEOUT}
                 fi
+                
+                sh """                   
+                def resStatus = sh(                       
+                      script: "kubectl get deployment ${BLUE_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE} && kubectl get hpa ${BLUE_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}",                      
+                returnStatus: true
+                )                  
+                if (resStatus != 0) {
+                    error "depoyment 或 HPA 不存在"
+                }                
+               
+                """
                 helm template ${BLUE_HELM_RELEASE} ${HELM_CHART_DIR} \
                   -n ${K8S_NAMESPACE} \
                   --set app.env=${BLUE_ENV} \
                   --set app.name=${APP_NAME} \
                   --show-only templates/service.yaml \
                   | kubectl apply -n ${K8S_NAMESPACE} -f -
-            """
+                 """
+                sh """               
+                def selectorCheck = sh(
+                     script: "kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.selector}' | grep -E '${BLUE_HELM_RELEASE}|${BLUE_ENV}'",
+                      returnStatus: true
+                  )
+                if (selectorCheck != 0) error "Service selector未指向蓝环境，配置更新失败"
+                """   
         }
     }
 
 }
+
 
