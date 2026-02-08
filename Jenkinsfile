@@ -39,8 +39,8 @@ pipeline {
         HPA_MAX_REPLICAS = 10
         HPA_CPU_TARGET_UTILIZATION = 70
 
-        L_G = "${LABEL_KEY}=green" // 原绿标签
-        L_B = "${LABEL_KEY}=blue"  // 原蓝标签
+        LABEL_KEY = "env"
+        SERVICE_NAME = "my-business-app-service"
     }
     parameters {
         booleanParam(
@@ -53,8 +53,7 @@ pipeline {
             defaultValue: false,
             description: "部署完成后是否销毁 Terraform 基础设施（仅测试环境）"
         )
-        string(name: 'K8S_NS', defaultValue: 'prod', desc: 'K8s命名空间')
-        string(name: 'SVC_NAME', defaultValue: 'app-svc', desc: '关联Service名')
+        
         string(name: 'LABEL_KEY', defaultValue: 'env', desc: '蓝绿标签键')
     }
 
@@ -126,6 +125,29 @@ pipeline {
             }
         }
 
+        # 把之前成功部署pod的green标签改为blue，以免第二次部署从蓝转绿情况
+        stage("把之前成功部署的green标签pod，转为blue") {
+            steps {
+                echo "===== 前置检查 ====="
+                # 1. 精准匹配绿色标签Pod，覆盖为蓝色标签（指定命名空间，无Pod匹配也不会报错）
+                sh "kubectl label pod -n $K8S_NAMESPACE} -l app=${APP_NAME},${LABEL_KEY}=${GREEN_ENV} ${LABEL_KEY}=${} --overwrite"
+             
+                # 2. 刷新Service Endpoint（重建端点，让Service重新识别蓝标签Pod，无重启、无流量中断）
+                sh "kubectl patch service ${SERVICE_NAME} -n ${K8S_NAMESPACE} -p '{"spec":{"selector":{"'${LABEL_KEY}'":"'${BLUE_ENV}'"}}}'"
+
+                sh """
+                # 3.执行命令并捕获返回码,非0返回码则终止并抛出错误
+                 kubectl get service ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.selector}'
+                 exit_code=\$?
+    
+                if [ \$exit_code -ne 0 ]; then
+                  echo "获取Service配置失败"
+                  exit 1
+                fi
+               """
+            }
+        }
+        
         stage("Pre-Check (Env + HPA Dependen)") {
             steps {
                 echo "===== 前置检查 ====="
@@ -224,25 +246,6 @@ pipeline {
                 """
             }
         }
-        // 互加标签：原绿加BLUE、原蓝加GREEN（双标签共存，流量不中断）   
-        stage('AddLabel') {
-            steps {
-                sh '''
-                    kubectl label pods -l ${L_G} -n ${K8S_NS} ${LABEL_KEY}=blue --overwrite=false
-                    kubectl label pods -l ${L_B} -n ${K8S_NS} ${LABEL_KEY}=green --overwrite=false
-                '''
-            }
-        }
-        // 移除旧标签：完成互换（原绿删GREEN、原蓝删BLUE）    --实现原来green标签变blue标签,原来blue标签变green标签,方便第二次部署
-        stage('DelOldLabel') {
-            steps {
-                sh '''
-                    kubectl label pods -l ${L_G} -n ${K8S_NS} ${LABEL_KEY}=green-
-                    kubectl label pods -l ${L_B} -n ${K8S_NS} ${LABEL_KEY}=blue-
-                '''
-            }
-        }
-
         
         stage("Destroy Infra with Terraform (Optional)") {
             when {
@@ -307,5 +310,6 @@ pipeline {
     }
 
 }
+
 
 
