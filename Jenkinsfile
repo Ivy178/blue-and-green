@@ -125,10 +125,9 @@ pipeline {
             }
         }
 
-        # 把之前成功部署pod的green标签改为blue，以免第二次部署从蓝转绿情况
-        stage("把之前成功部署的green标签pod，转为blue") {
+        # 把之前成功部署pod的green标签改为blue，就是重置把流量回原来蓝色的稳定状态，以免第二次部署失败
+        stage("Change green to blue") {
             steps {
-                echo "===== 前置检查 ====="
                 # 1. 精准匹配绿色标签Pod，覆盖为蓝色标签（指定命名空间，无Pod匹配也不会报错）
                 sh "kubectl label pod -n $K8S_NAMESPACE} -l app=${APP_NAME},${LABEL_KEY}=${GREEN_ENV} ${LABEL_KEY}=${} --overwrite"
              
@@ -155,15 +154,7 @@ pipeline {
                 sh "helm version --short"
                 sh "kubectl get ns ${K8S_NAMESPACE} || (echo 'Namespace 不存在' && exit 1)"
                 sh "test -d ${HELM_CHART_DIR} || (echo 'Chart 目录不存在' && exit 1)"
-                sh """
-                    def resStatus = sh(
-                       script: "kubectl get deployment metrics-server -n kube-system",
-                       returnStatus: true
-                    )
-                   if (resStatus != 0) {
-                   error "metrics-server  不存在，终止流程"
-                   }
-                """
+                sh "kubectl get deployment metrics-server -n kube-system > /dev/null 2>&1 || (echo 'metrics-server 不存在' && exit 1)"
             }
         }
 
@@ -186,6 +177,7 @@ pipeline {
                       --create-namespace=false
 
                 sh """
+                   # 返回码非0，有错误提示
                    def resStatus = sh(
                        script: "kubectl get deployment ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE} && kubectl get hpa ${GREEN_HELM_RELEASE}-${APP_NAME} -n ${K8S_NAMESPACE}",
                       returnStatus: true
@@ -229,21 +221,25 @@ pipeline {
                     helm uninstall ${BLUE_HELM_RELEASE} -n ${K8S_NAMESPACE} --ignore-not-found
                     kubectl delete pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} --ignore-not-found
                 """
+                
                 sh """
-                def checkClean = sh(
-                script: """
-                    # 1. 检查Helm Release是否存在
-                    helm list -n ${K8S_NAMESPACE} | grep ${BLUE_HELM_RELEASE} && exit 1
-                    # 2. 检查Deployment/HPA是否残留（Helm卸载后应删除）
-                    kubectl get deploy,hpa -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} && exit 1
-                    # 3. 检查Pod是否彻底删除
-                    kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} && exit 1
-                """,
-                returnStatus: true
-                )
-               if (checkClean != 0) error " 蓝环境资源未清理干净，存在残留！"
-               echo "蓝环境（${BLUE_HELM_RELEASE}）清理完成，无资源残留"
-                """
+                 # 检查helm release是否残留
+                 helm status ${BLUE_HELM_RELEASE} -n ${K8S_NAMESPACE} >/dev/null 2>&1
+                 HELM_EXIT=\$?
+    
+                 # 检查blue标签pod是否残留
+                 kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME},env=${BLUE_ENV} >/dev/null 2>&1
+                 POD_EXIT=\$?
+    
+                 # 有残留则返回非0码，无残留返回0
+                 if [ \$HELM_EXIT -eq 0 ] || [ \$POD_EXIT -eq 0 ]; then
+                   echo "资源未清理干净：helm release或blue pod仍存在"
+                   exit 1
+                else
+                   echo "所有目标资源已清理完成"
+                   exit 0
+                fi
+            """
             }
         }
         
@@ -290,8 +286,8 @@ pipeline {
                 if (resStatus != 0) {
                     error "depoyment 或 HPA 不存在"
                 }                
-               
                 """
+                
                 helm template ${BLUE_HELM_RELEASE} ${HELM_CHART_DIR} \
                   -n ${K8S_NAMESPACE} \
                   --set app.env=${BLUE_ENV} \
@@ -310,6 +306,7 @@ pipeline {
     }
 
 }
+
 
 
 
