@@ -125,7 +125,7 @@ pipeline {
             }
         }
 
-        # 把之前成功部署pod的green标签改为blue，就是重置把流量回原来蓝色的稳定状态，以免第二次部署失败
+        # 把之前成功部署pod的green标签改为blue，就是把流量重置回原来蓝色的稳定状态，以免第二次部署失败
         stage("Change green to blue") {
             steps {
                 # 1. 精准匹配绿色标签Pod，覆盖为蓝色标签（指定命名空间，无Pod匹配也不会报错）
@@ -306,6 +306,7 @@ pipeline {
     }
 
 }
+
 
 
 
